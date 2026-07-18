@@ -25,6 +25,7 @@ class WhatsAppService {
         this.started = false;
         this.reconnecting = false;
         this.pairingRequested = false;
+        this.phoneNumber = null;
 
     }
 
@@ -57,71 +58,69 @@ class WhatsAppService {
 
     async start() {
 
-        if (this.started)
-            return;
+    if (this.started)
+        return;
 
-        this.started = true;
+    this.started = true;
 
-        const { state, saveCreds } =
-            await useMultiFileAuthState("./storage/auth");
+    // Pedir el número ANTES de crear el socket
+    if (!this.phoneNumber) {
 
-        const { version } =
-            await fetchLatestBaileysVersion();
-
-        ConsoleUI.info(
-            `Baileys ${version.join(".")}`
-        );
-
-        this.sock = makeWASocket({
-
-            version,
-
-            auth: state,
-
-            logger: pino({
-                level: "silent"
-            }),
-
-            browser: [
-                "XZM Bot",
-                "Chrome",
-                "1.0.0"
-            ],
-
-            printQRInTerminal: false,
-
-            markOnlineOnConnect: true,
-
-            syncFullHistory: false,
-
-            generateHighQualityLinkPreview: false
-
-        });
-
-        this.sock.ev.on(
-            "creds.update",
-            saveCreds
-        );
-
-        this.sock.ev.on(
-            "connection.update",
-            async (update) => {
-
-                await this.connectionUpdate(update);
-
-            }
-        );
-
-        this.sock.ev.on(
-            "messages.upsert",
-            async (data) => {
-
-                await this.messagesUpsert(data);
-
-            }
-        );
+        this.phoneNumber =
+            await this.askPhoneNumber();
 
     }
+
+    const { state, saveCreds } =
+        await useMultiFileAuthState("./storage/auth");
+
+    const { version } =
+        await fetchLatestBaileysVersion();
+
+    ConsoleUI.info(
+        `Baileys ${version.join(".")}`
+    );
+
+    this.sock = makeWASocket({
+
+        version,
+
+        auth: state,
+
+        logger: pino({
+            level: "silent"
+        }),
+
+        browser: [
+            "XZM Bot",
+            "Chrome",
+            "1.0.0"
+        ],
+
+        printQRInTerminal: false,
+
+        markOnlineOnConnect: true,
+
+        syncFullHistory: false
+
+    });
+
+    this.sock.ev.on(
+        "creds.update",
+        saveCreds
+    );
+
+    this.sock.ev.on(
+        "connection.update",
+        (u) => this.connectionUpdate(u)
+    );
+
+    this.sock.ev.on(
+        "messages.upsert",
+        (m) => this.messagesUpsert(m)
+    );
+
+}
 
     async reconnect() {
 
@@ -185,8 +184,6 @@ class WhatsAppService {
 
             try {
 
-                const phone =
-                    await this.askPhoneNumber();
 
                 ConsoleUI.info(
                     "Solicitando Pairing Code..."
