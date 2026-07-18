@@ -22,9 +22,10 @@ class WhatsAppService {
 
         this.sock = null;
 
-        this.isConnecting = false;
-        this.isReconnecting = false;
+        this.started = false;
+        this.reconnecting = false;
         this.pairingRequested = false;
+
     }
 
     async askPhoneNumber() {
@@ -47,6 +48,7 @@ class WhatsAppService {
                     );
 
                 }
+
             );
 
         });
@@ -55,91 +57,123 @@ class WhatsAppService {
 
     async start() {
 
-        if (this.isConnecting)
+        if (this.started)
             return;
 
-        this.isConnecting = true;
+        this.started = true;
+
+        const { state, saveCreds } =
+            await useMultiFileAuthState("./storage/auth");
+
+        const { version } =
+            await fetchLatestBaileysVersion();
+
+        ConsoleUI.info(
+            `Baileys ${version.join(".")}`
+        );
+
+        this.sock = makeWASocket({
+
+            version,
+
+            auth: state,
+
+            logger: pino({
+                level: "silent"
+            }),
+
+            browser: [
+                "XZM Bot",
+                "Chrome",
+                "1.0.0"
+            ],
+
+            printQRInTerminal: false,
+
+            markOnlineOnConnect: true,
+
+            syncFullHistory: false,
+
+            generateHighQualityLinkPreview: false
+
+        });
+
+        this.sock.ev.on(
+            "creds.update",
+            saveCreds
+        );
+
+        this.sock.ev.on(
+            "connection.update",
+            async (update) => {
+
+                await this.connectionUpdate(update);
+
+            }
+        );
+
+        this.sock.ev.on(
+            "messages.upsert",
+            async (data) => {
+
+                await this.messagesUpsert(data);
+
+            }
+        );
+
+    }
+
+    async reconnect() {
+
+        if (this.reconnecting)
+            return;
+
+        this.reconnecting = true;
+
+        ConsoleUI.warning(
+            "Reconectando..."
+        );
 
         try {
 
-            const { state, saveCreds } =
-                await useMultiFileAuthState("./storage/auth");
+            if (this.sock) {
 
-            const { version } =
-                await fetchLatestBaileysVersion();
+                try {
+                    this.sock.ev.removeAllListeners();
+                } catch {}
 
-            ConsoleUI.info(
-                `Baileys ${version.join(".")}`
+                try {
+                    this.sock.ws?.close();
+                } catch {}
+
+                this.sock = null;
+
+            }
+
+            this.started = false;
+
+            await new Promise(resolve =>
+                setTimeout(resolve, 5000)
             );
 
-            this.sock = makeWASocket({
-
-                version,
-
-                auth: state,
-
-                logger: pino({
-                    level: "silent"
-                }),
-
-                browser: [
-                    "XZM Bot",
-                    "Chrome",
-                    "1.0.0"
-                ],
-
-                printQRInTerminal: false,
-
-                syncFullHistory: false,
-
-                markOnlineOnConnect: true,
-
-                generateHighQualityLinkPreview: false
-
-            });
-
-            this.sock.ev.on(
-                "creds.update",
-                saveCreds
-            );
-
-            this.sock.ev.on(
-                "connection.update",
-                (update) => this.connectionUpdate(update)
-            );
-
-            this.sock.ev.on(
-                "messages.upsert",
-                (msg) => this.messagesUpsert(msg)
-            );
-
-        } catch (err) {
-
-            ConsoleUI.error(err.message);
+            await this.start();
 
         } finally {
 
-            this.isConnecting = false;
+            this.reconnecting = false;
 
         }
 
     }
 
-
     async connectionUpdate(update) {
 
         const {
             connection,
-            qr,
             lastDisconnect
         } = update;
 
-        // No usamos QR
-        if (qr) {
-            ConsoleUI.info("Esperando Pairing Code...");
-        }
-
-        // Solicitar Pairing Code SOLO cuando el socket ya inició
+        // Socket listo para solicitar Pairing Code
         if (
             connection === "connecting" &&
             this.sock &&
@@ -151,29 +185,41 @@ class WhatsAppService {
 
             try {
 
-                const phone = await this.askPhoneNumber();
+                const phone =
+                    await this.askPhoneNumber();
 
-                ConsoleUI.info("Generando código de emparejamiento...");
+                ConsoleUI.info(
+                    "Solicitando Pairing Code..."
+                );
+
+                // Esperar un poco para que el socket quede completamente listo
+                await new Promise(resolve =>
+                    setTimeout(resolve, 2000)
+                );
 
                 const code =
                     await this.sock.requestPairingCode(phone);
 
+                console.clear();
+
                 console.log("");
-                console.log("=========================================");
-                console.log("        CÓDIGO DE EMPAREJAMIENTO");
-                console.log("=========================================");
+                console.log("===========================================");
+                console.log("        XZM BOT");
+                console.log("===========================================");
+                console.log("");
+                console.log("Código de emparejamiento:");
                 console.log("");
                 console.log("        " + code);
                 console.log("");
-                console.log("=========================================");
+                console.log("===========================================");
                 console.log("");
-                console.log("En WhatsApp:");
-                console.log("Ajustes");
+                console.log("WhatsApp");
+                console.log("→ Ajustes");
                 console.log("→ Dispositivos vinculados");
                 console.log("→ Vincular un dispositivo");
                 console.log("→ Vincular con número");
                 console.log("");
-                console.log("Escribe el código anterior.");
+                console.log("Introduce el código mostrado.");
                 console.log("");
 
             } catch (err) {
@@ -181,20 +227,17 @@ class WhatsAppService {
                 this.pairingRequested = false;
 
                 ConsoleUI.error(
-                    "No fue posible generar el Pairing Code."
+                    err.stack || err.message
                 );
-
-                ConsoleUI.error(err.message);
 
             }
 
             return;
+
         }
 
-        // Conectado
         if (connection === "open") {
 
-            this.isReconnecting = false;
             this.pairingRequested = false;
 
             const user = this.sock.user;
@@ -210,14 +253,16 @@ class WhatsAppService {
 
             }
 
-            ConsoleUI.success("WhatsApp conectado.");
+            ConsoleUI.success(
+                "WhatsApp conectado."
+            );
+
             ConsoleUI.render();
 
             return;
 
         }
 
-        // Desconectado
         if (connection === "close") {
 
             const statusCode =
@@ -225,65 +270,27 @@ class WhatsAppService {
                     ? lastDisconnect.error.output.statusCode
                     : 0;
 
-            const shouldReconnect =
-                statusCode !== DisconnectReason.loggedOut;
+            if (
+                statusCode === DisconnectReason.loggedOut
+            ) {
+
+                ConsoleUI.error(
+                    "La sesión expiró."
+                );
+
+                ConsoleUI.error(
+                    "Elimina storage/auth y vuelve a iniciar."
+                );
+
+                return;
+
+            }
 
             ConsoleUI.warning(
                 `Conexión cerrada (${statusCode})`
             );
 
-            ConsoleUI.render();
-
-            if (!shouldReconnect) {
-
-                ConsoleUI.error(
-                    "La sesión fue cerrada. Elimina la carpeta storage/auth y vuelve a iniciar."
-                );
-
-                return;
-
-            }
-
-            if (this.isReconnecting)
-                return;
-
-            this.isReconnecting = true;
-
-            try {
-
-                if (this.sock) {
-
-                    try {
-
-                        this.sock.ev.removeAllListeners();
-
-                    } catch {}
-
-                    try {
-
-                        this.sock.ws?.close();
-
-                    } catch {}
-
-                    this.sock = null;
-
-                }
-
-                ConsoleUI.info(
-                    "Reconectando en 5 segundos..."
-                );
-
-                await new Promise(resolve =>
-                    setTimeout(resolve, 5000)
-                );
-
-                await this.start();
-
-            } catch (err) {
-
-                ConsoleUI.error(err.message);
-
-            }
+            await this.reconnect();
 
         }
 
@@ -294,7 +301,7 @@ class WhatsAppService {
         if (type !== "notify")
             return;
 
-        if (!messages || !messages.length)
+        if (!messages?.length)
             return;
 
         const msg = messages[0];
@@ -302,47 +309,49 @@ class WhatsAppService {
         if (!msg)
             return;
 
-        // Ignorar mensajes enviados por el propio bot
         if (msg.key.fromMe)
             return;
 
         if (!msg.message)
             return;
 
-        // Ignorar estados
         if (msg.key.remoteJid === "status@broadcast")
             return;
 
         let text = "";
 
         if (msg.message.conversation) {
+
             text = msg.message.conversation;
-        }
-        else if (msg.message.extendedTextMessage) {
+
+        } else if (msg.message.extendedTextMessage?.text) {
+
             text = msg.message.extendedTextMessage.text;
-        }
-        else if (msg.message.imageMessage?.caption) {
+
+        } else if (msg.message.imageMessage?.caption) {
+
             text = msg.message.imageMessage.caption;
-        }
-        else if (msg.message.videoMessage?.caption) {
+
+        } else if (msg.message.videoMessage?.caption) {
+
             text = msg.message.videoMessage.caption;
-        }
-        else {
+
+        } else {
+
             return;
+
         }
+
+        text = text.trim();
 
         if (!text.startsWith("."))
             return;
 
-        const args = text
+        const parts = text
             .slice(1)
-            .trim()
             .split(/\s+/);
 
-        if (!args.length)
-            return;
-
-        const commandName = args.shift().toLowerCase();
+        const command = (parts.shift() || "").toLowerCase();
 
         const ctx = new Context({
 
@@ -350,9 +359,9 @@ class WhatsAppService {
 
             msg,
 
-            command: commandName,
+            command,
 
-            args,
+            args: parts,
 
             bot: this.bot
 
@@ -365,17 +374,7 @@ class WhatsAppService {
                 ctx.senderName
             );
 
-        } catch (err) {
-
-            ConsoleUI.warning(
-                "No fue posible guardar el contacto."
-            );
-
-        }
-
-        ConsoleUI.info(
-            `Comando recibido: ${commandName}`
-        );
+        } catch {}
 
         try {
 
@@ -384,21 +383,23 @@ class WhatsAppService {
 
             if (executed) {
 
-                ConsoleUI.success(
-                    `Comando ejecutado: ${commandName}`
+                ConsoleUI.info(
+                    `Comando: ${command}`
                 );
 
             } else {
 
                 ConsoleUI.warning(
-                    `Comando inexistente: ${commandName}`
+                    `Comando inexistente: ${command}`
                 );
 
             }
 
         } catch (err) {
 
-            ConsoleUI.error(err.stack || err.message);
+            ConsoleUI.error(
+                err.stack || err.message
+            );
 
         }
 
@@ -409,5 +410,3 @@ class WhatsAppService {
 }
 
 module.exports = WhatsAppService;    
-
-    
