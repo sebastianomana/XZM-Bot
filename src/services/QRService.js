@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const QRCode = require("qrcode");
+const qrcodeTerminal = require("qrcode-terminal");
 
 class QRService {
 
@@ -29,19 +30,21 @@ class QRService {
         console.log("╠══════════════════════════════════════════════════════╣");
         console.log("║ Estado : Esperando autenticación                    ║");
         console.log("║                                                      ║");
-        console.log("║ QR generado correctamente.                          ║");
-        console.log("║                                                      ║");
-        console.log("║ temp/qr.png                                         ║");
+        console.log("║ Escanea el siguiente QR desde WhatsApp              ║");
         console.log("╚══════════════════════════════════════════════════════╝");
+
+        console.log();
+
+        qrcodeTerminal.generate(qr, {
+            small: true
+        });
 
     }
 
     remove() {
 
         if (fs.existsSync(this.qrPath)) {
-
             fs.unlinkSync(this.qrPath);
-
         }
 
     }

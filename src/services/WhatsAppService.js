@@ -5,6 +5,8 @@ const {
     fetchLatestBaileysVersion,
 } = require("@whiskeysockets/baileys");
 
+const readline = require("readline");
+
 const ContactManager = require("../managers/ContactManager");
 
 const pino = require("pino");
@@ -12,7 +14,7 @@ const { Boom } = require("@hapi/boom");
 
 const Context = require("../core/Context");
 const ConsoleUI = require("../ui/ConsoleUI");
-const QRService = require("./QRService");
+
 
 class WhatsAppService {
 
@@ -24,52 +26,95 @@ class WhatsAppService {
 
     this.sock = null;
 
-    this.qr = new QRService();
+}
+
+async askPhoneNumber() {
+
+    return new Promise((resolve) => {
+
+        const rl = readline.createInterface({
+            input: process.stdin,
+            output: process.stdout
+        });
+
+        rl.question(
+            "\n📱 Ingresa tu número de WhatsApp (ej: 573001234567): ",
+            (number) => {
+                rl.close();
+                resolve(number.replace(/\D/g, ""));
+            }
+        );
+
+    });
 
 }
 
     async start() {
 
-        const { state, saveCreds } =
-            await useMultiFileAuthState("auth");
+    const { state, saveCreds } =
+        await useMultiFileAuthState("auth");
 
-        const { version } =
-            await fetchLatestBaileysVersion();
+    const { version } =
+        await fetchLatestBaileysVersion();
 
-        this.sock = makeWASocket({
+    this.sock = makeWASocket({
 
-            version,
+        version,
 
-            auth: state,
+        auth: state,
 
-            logger: pino({
-                level: "silent"
-            }),
+        logger: pino({
+            level: "silent"
+        }),
 
-            browser: [
-                "WhatsAppBot",
-                "Chrome",
-                "1.0.0"
-            ]
+        browser: [
+            "XZM Bot",
+            "Chrome",
+            "1.0.0"
+        ],
 
-        });
+        printQRInTerminal: false
 
-        this.sock.ev.on(
-            "creds.update",
-            saveCreds
-        );
+    });
 
-        this.sock.ev.on(
-            "connection.update",
-            this.connectionUpdate.bind(this)
-        );
+    this.sock.ev.on(
+        "creds.update",
+        saveCreds
+    );
 
-        this.sock.ev.on(
-            "messages.upsert",
-            this.messagesUpsert.bind(this)
-        );
+    this.sock.ev.on(
+        "connection.update",
+        this.connectionUpdate.bind(this)
+    );
+
+    this.sock.ev.on(
+        "messages.upsert",
+        this.messagesUpsert.bind(this)
+    );
+
+    // Si aún no está autenticado
+    if (!this.sock.authState.creds.registered) {
+
+        const phone = await this.askPhoneNumber();
+
+        const code =
+            await this.sock.requestPairingCode(phone);
+
+        console.log("\n");
+        console.log("====================================");
+        console.log("   CÓDIGO DE EMPAREJAMIENTO");
+        console.log("====================================");
+        console.log(code);
+        console.log("====================================");
+        console.log("En WhatsApp:");
+        console.log("Dispositivos vinculados");
+        console.log("→ Vincular con número");
+        console.log("→ Escribe este código");
+        console.log("");
 
     }
+
+}
 
     async connectionUpdate(update) {
 
@@ -80,18 +125,10 @@ class WhatsAppService {
         } = update;
 
         if (qr) {
-
-            await this.qr.generate(qr);
-
-            ConsoleUI.setStatus("Esperando autenticación");
-            ConsoleUI.info("QR generado.");
-            ConsoleUI.render();
-
-        }
+    // Ya no usamos QR.
+}
 
         if (connection === "open") {
-
-            this.qr.remove();
 
             const user = this.sock.user;
 
