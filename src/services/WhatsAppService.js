@@ -74,9 +74,8 @@ class WhatsAppService {
     const { state, saveCreds } =
         await useMultiFileAuthState("./storage/auth");
 
-    const version = [2, 3000, 1035194821];
-
-console.log("Usando versión:", version);
+    const { version } =
+        await fetchLatestBaileysVersion();
 
     ConsoleUI.info(
         `Baileys ${version.join(".")}`
