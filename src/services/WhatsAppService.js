@@ -2,119 +2,129 @@ const {
     default: makeWASocket,
     DisconnectReason,
     useMultiFileAuthState,
-    fetchLatestBaileysVersion,
+    fetchLatestBaileysVersion
 } = require("@whiskeysockets/baileys");
 
-const readline = require("readline");
-
-const ContactManager = require("../managers/ContactManager");
-
 const pino = require("pino");
+const readline = require("readline");
 const { Boom } = require("@hapi/boom");
 
+const ContactManager = require("../managers/ContactManager");
 const Context = require("../core/Context");
 const ConsoleUI = require("../ui/ConsoleUI");
-
 
 class WhatsAppService {
 
     constructor(options) {
 
-    this.commandManager = options.commandManager;
+        this.commandManager = options.commandManager;
+        this.bot = options.bot;
 
-    this.bot = options.bot;
+        this.sock = null;
 
-    this.sock = null;
+        this.isConnecting = false;
+        this.isReconnecting = false;
+        this.pairingRequested = false;
+    }
 
-}
+    async askPhoneNumber() {
 
-async askPhoneNumber() {
+        return new Promise((resolve) => {
 
-    return new Promise((resolve) => {
+            const rl = readline.createInterface({
+                input: process.stdin,
+                output: process.stdout
+            });
 
-        const rl = readline.createInterface({
-            input: process.stdin,
-            output: process.stdout
+            rl.question(
+                "\n📱 Número de WhatsApp (573001234567): ",
+                (number) => {
+
+                    rl.close();
+
+                    resolve(
+                        number.replace(/\D/g, "")
+                    );
+
+                }
+            );
+
         });
-
-        rl.question(
-            "\n📱 Ingresa tu número de WhatsApp (ej: 573001234567): ",
-            (number) => {
-                rl.close();
-                resolve(number.replace(/\D/g, ""));
-            }
-        );
-
-    });
-
-}
-
-    async start() {
-
-    const { state, saveCreds } =
-        await useMultiFileAuthState("auth");
-
-    const { version } =
-        await fetchLatestBaileysVersion();
-
-    this.sock = makeWASocket({
-
-        version,
-
-        auth: state,
-
-        logger: pino({
-            level: "silent"
-        }),
-
-        browser: [
-            "XZM Bot",
-            "Chrome",
-            "1.0.0"
-        ],
-
-        printQRInTerminal: false
-
-    });
-
-    this.sock.ev.on(
-        "creds.update",
-        saveCreds
-    );
-
-    this.sock.ev.on(
-        "connection.update",
-        this.connectionUpdate.bind(this)
-    );
-
-    this.sock.ev.on(
-        "messages.upsert",
-        this.messagesUpsert.bind(this)
-    );
-
-    // Si aún no está autenticado
-    if (!this.sock.authState.creds.registered) {
-
-        const phone = await this.askPhoneNumber();
-
-        const code =
-            await this.sock.requestPairingCode(phone);
-
-        console.log("\n");
-        console.log("====================================");
-        console.log("   CÓDIGO DE EMPAREJAMIENTO");
-        console.log("====================================");
-        console.log(code);
-        console.log("====================================");
-        console.log("En WhatsApp:");
-        console.log("Dispositivos vinculados");
-        console.log("→ Vincular con número");
-        console.log("→ Escribe este código");
-        console.log("");
 
     }
 
-}
+    async start() {
+
+        if (this.isConnecting)
+            return;
+
+        this.isConnecting = true;
+
+        try {
+
+            const { state, saveCreds } =
+                await useMultiFileAuthState("./storage/auth");
+
+            const { version } =
+                await fetchLatestBaileysVersion();
+
+            ConsoleUI.info(
+                `Baileys ${version.join(".")}`
+            );
+
+            this.sock = makeWASocket({
+
+                version,
+
+                auth: state,
+
+                logger: pino({
+                    level: "silent"
+                }),
+
+                browser: [
+                    "XZM Bot",
+                    "Chrome",
+                    "1.0.0"
+                ],
+
+                printQRInTerminal: false,
+
+                syncFullHistory: false,
+
+                markOnlineOnConnect: true,
+
+                generateHighQualityLinkPreview: false
+
+            });
+
+            this.sock.ev.on(
+                "creds.update",
+                saveCreds
+            );
+
+            this.sock.ev.on(
+                "connection.update",
+                (update) => this.connectionUpdate(update)
+            );
+
+            this.sock.ev.on(
+                "messages.upsert",
+                (msg) => this.messagesUpsert(msg)
+            );
+
+        } catch (err) {
+
+            ConsoleUI.error(err.message);
+
+        } finally {
+
+            this.isConnecting = false;
+
+        }
+
+    }
+
 
     async connectionUpdate(update) {
 
@@ -124,11 +134,68 @@ async askPhoneNumber() {
             lastDisconnect
         } = update;
 
+        // No usamos QR
         if (qr) {
-    // Ya no usamos QR.
-}
+            ConsoleUI.info("Esperando Pairing Code...");
+        }
 
+        // Solicitar Pairing Code SOLO cuando el socket ya inició
+        if (
+            connection === "connecting" &&
+            this.sock &&
+            !this.sock.authState.creds.registered &&
+            !this.pairingRequested
+        ) {
+
+            this.pairingRequested = true;
+
+            try {
+
+                const phone = await this.askPhoneNumber();
+
+                ConsoleUI.info("Generando código de emparejamiento...");
+
+                const code =
+                    await this.sock.requestPairingCode(phone);
+
+                console.log("");
+                console.log("=========================================");
+                console.log("        CÓDIGO DE EMPAREJAMIENTO");
+                console.log("=========================================");
+                console.log("");
+                console.log("        " + code);
+                console.log("");
+                console.log("=========================================");
+                console.log("");
+                console.log("En WhatsApp:");
+                console.log("Ajustes");
+                console.log("→ Dispositivos vinculados");
+                console.log("→ Vincular un dispositivo");
+                console.log("→ Vincular con número");
+                console.log("");
+                console.log("Escribe el código anterior.");
+                console.log("");
+
+            } catch (err) {
+
+                this.pairingRequested = false;
+
+                ConsoleUI.error(
+                    "No fue posible generar el Pairing Code."
+                );
+
+                ConsoleUI.error(err.message);
+
+            }
+
+            return;
+        }
+
+        // Conectado
         if (connection === "open") {
+
+            this.isReconnecting = false;
+            this.pairingRequested = false;
 
             const user = this.sock.user;
 
@@ -146,89 +213,194 @@ async askPhoneNumber() {
             ConsoleUI.success("WhatsApp conectado.");
             ConsoleUI.render();
 
+            return;
+
         }
 
+        // Desconectado
         if (connection === "close") {
 
-            const shouldReconnect =
-                (lastDisconnect?.error instanceof Boom
+            const statusCode =
+                lastDisconnect?.error instanceof Boom
                     ? lastDisconnect.error.output.statusCode
-                    : 0) !== DisconnectReason.loggedOut;
+                    : 0;
 
-            ConsoleUI.warning("Conexión cerrada.");
+            const shouldReconnect =
+                statusCode !== DisconnectReason.loggedOut;
+
+            ConsoleUI.warning(
+                `Conexión cerrada (${statusCode})`
+            );
+
             ConsoleUI.render();
 
-            if (shouldReconnect) {
+            if (!shouldReconnect) {
 
-                this.start();
+                ConsoleUI.error(
+                    "La sesión fue cerrada. Elimina la carpeta storage/auth y vuelve a iniciar."
+                );
+
+                return;
+
+            }
+
+            if (this.isReconnecting)
+                return;
+
+            this.isReconnecting = true;
+
+            try {
+
+                if (this.sock) {
+
+                    try {
+
+                        this.sock.ev.removeAllListeners();
+
+                    } catch {}
+
+                    try {
+
+                        this.sock.ws?.close();
+
+                    } catch {}
+
+                    this.sock = null;
+
+                }
+
+                ConsoleUI.info(
+                    "Reconectando en 5 segundos..."
+                );
+
+                await new Promise(resolve =>
+                    setTimeout(resolve, 5000)
+                );
+
+                await this.start();
+
+            } catch (err) {
+
+                ConsoleUI.error(err.message);
 
             }
 
         }
 
     }
+    
+    async messagesUpsert({ messages, type }) {
 
-    async messagesUpsert({ messages }) {
+        if (type !== "notify")
+            return;
 
-        console.log("MENSAJE RECIBIDO");
+        if (!messages || !messages.length)
+            return;
 
-    const msg = messages[0];
+        const msg = messages[0];
 
-    if (!msg.message)
-        return;
+        if (!msg)
+            return;
 
-    const text =
-        msg.message.conversation ||
-        msg.message.extendedTextMessage?.text ||
-        "";
+        // Ignorar mensajes enviados por el propio bot
+        if (msg.key.fromMe)
+            return;
 
-    if (!text.startsWith("."))
-        return;
+        if (!msg.message)
+            return;
 
-    const args = text
-        .slice(1)
-        .trim()
-        .split(/\s+/);
+        // Ignorar estados
+        if (msg.key.remoteJid === "status@broadcast")
+            return;
 
-    const commandName = args
-        .shift()
-        .toLowerCase();
+        let text = "";
 
-    const ctx = new Context({
+        if (msg.message.conversation) {
+            text = msg.message.conversation;
+        }
+        else if (msg.message.extendedTextMessage) {
+            text = msg.message.extendedTextMessage.text;
+        }
+        else if (msg.message.imageMessage?.caption) {
+            text = msg.message.imageMessage.caption;
+        }
+        else if (msg.message.videoMessage?.caption) {
+            text = msg.message.videoMessage.caption;
+        }
+        else {
+            return;
+        }
 
-    sock: this.sock,
+        if (!text.startsWith("."))
+            return;
 
-    msg,
+        const args = text
+            .slice(1)
+            .trim()
+            .split(/\s+/);
 
-    command: commandName,
+        if (!args.length)
+            return;
 
-    args,
+        const commandName = args.shift().toLowerCase();
 
-    bot: this.bot
+        const ctx = new Context({
 
-});
+            sock: this.sock,
 
-ContactManager.save(
+            msg,
 
-    ctx.sender,
+            command: commandName,
 
-    ctx.senderName
+            args,
 
-);
+            bot: this.bot
 
+        });
 
-    console.log("Comando:", commandName);
+        try {
 
-const executed =
-    await this.commandManager.execute(ctx);
+            ContactManager.save(
+                ctx.sender,
+                ctx.senderName
+            );
 
-console.log("Ejecutado:", executed);
+        } catch (err) {
 
-    if (executed) {
+            ConsoleUI.warning(
+                "No fue posible guardar el contacto."
+            );
+
+        }
 
         ConsoleUI.info(
-            `Comando ejecutado: ${commandName}`
+            `Comando recibido: ${commandName}`
         );
+
+        try {
+
+            const executed =
+                await this.commandManager.execute(ctx);
+
+            if (executed) {
+
+                ConsoleUI.success(
+                    `Comando ejecutado: ${commandName}`
+                );
+
+            } else {
+
+                ConsoleUI.warning(
+                    `Comando inexistente: ${commandName}`
+                );
+
+            }
+
+        } catch (err) {
+
+            ConsoleUI.error(err.stack || err.message);
+
+        }
 
         ConsoleUI.render();
 
@@ -236,6 +408,6 @@ console.log("Ejecutado:", executed);
 
 }
 
-}
+module.exports = WhatsAppService;    
 
-module.exports = WhatsAppService;
+    
